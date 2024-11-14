@@ -1,45 +1,27 @@
-# Cell: Clean up duplicated columns and convert to numeric
-print("Cleaning up duplicated columns and converting to numeric...")
+# Get number of available CPU cores
+num_cores = mp.cpu_count()
+print(f"Number of CPU cores available: {num_cores}")
 
-# First, let's see what columns are duplicated
-duplicated_cols = ml_training_df.columns[ml_training_df.columns.duplicated()]
-print("\nDuplicated columns found:")
-print(duplicated_cols)
+# XGBoost parameters with multi-threading
+xgb_params = {
+    'max_depth': 6,
+    'learning_rate': 0.1,
+    'n_estimators': 100,
+    'subsample': 0.8,
+    'colsample_bytree': 0.8,
+    'nthread': num_cores,  # Use all available cores
+    'tree_method': 'hist',  # Faster tree construction method
+    'predictor': 'cpu_predictor',
+    'verbosity': 2  # To see more information about training
+}
+xgb_params['tree_method'] = 'gpu_hist'
+xgb_params['predictor'] = 'gpu_predictor'
+xgb_params.update({
+    'parallel_tree': 'true',  # Build trees in parallel
+    'sampling_method': 'gradient_based',  # More efficient sampling
+    'grow_policy': 'lossguide'  # More efficient tree growing
+})
 
-# Remove duplicated columns first
-ml_training_df = ml_training_df.loc[:, ~ml_training_df.columns.duplicated()]
-
-# Now convert the problematic hic3 columns
-hic3_cols = [
-    'times_coupon_hic3_missing',
-    'times_paid_cash_hic3_missing',
-    'prct_times_paid_cash_hic3_missing',
-    'prct_ttl_times_sold_hic3_missing',
-    'prct_times_cdc_hic3_missing'
-]
-
-for col in hic3_cols:
-    if col in ml_training_df.columns:
-        try:
-            # Convert to numeric and fill NaN with 0
-            ml_training_df[col] = pd.to_numeric(ml_training_df[col], errors='coerce').fillna(0)
-            print(f"Successfully converted {col}")
-        except Exception as e:
-            print(f"Error converting {col}: {str(e)}")
-
-# Check final dtypes
-print("\nFinal column types summary:")
-dtype_counts = ml_training_df.dtypes.value_counts()
-print(dtype_counts)
-
-# Verify remaining object columns
-object_cols = ml_training_df.select_dtypes(include=['object']).columns
-print("\nColumns still in object format:")
-print(object_cols.tolist())
-
-# Save the cleaned dataframe
-print("\nSaving cleaned dataframe...")
-with open(save_dir / 'ml_training_df_cleaned.pkl', 'wb') as f:
-    pickle.dump(ml_training_df, f)
-
-print("\nCleaning complete!")
+print("Training stage 1 model using all cores...")
+stage1_model = xgb.XGBClassifier(**xgb_params)
+stage1_model.fit(train_df[feature_cols], train_df['is_insurance'])
