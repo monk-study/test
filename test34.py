@@ -1,138 +1,112 @@
-# Cell 6: Combine Features and Create Labels with Type Conversion
+# Cell 6: Process MODEL_INPUT with parallel processing
 import tqdm
 import pickle
 from pathlib import Path
+import multiprocessing as mp
+from concurrent.futures import ProcessPoolExecutor, as_completed
+import cupy as cp  # For GPU support
+import math
 
 # Create directory for intermediate results if it doesn't exist
 save_dir = Path('intermediate_results')
 save_dir.mkdir(exist_ok=True)
 
-print("Starting feature processing...")
+def process_chunk(chunk_data):
+    """Process a chunk of MODEL_INPUT data in parallel"""
+    chunk_df = pd.DataFrame()
+    for row in chunk_data:
+        try:
+            data = json.loads(row) if isinstance(row, str) else row
+            row_df = pd.DataFrame([data])
+            chunk_df = pd.concat([chunk_df, row_df], ignore_index=True)
+        except Exception as e:
+            chunk_df = pd.concat([chunk_df, pd.DataFrame([{}])], ignore_index=True)
+    return chunk_df
 
-# Process MODEL_INPUT with progress bar and chunking
-print("Processing MODEL_INPUT...")
-chunk_size = 10000  # Process 10000 rows at a time
-total_rows = len(ml_training_df)
+# Configuration
+num_cores = mp.cpu_count()  # Get number of CPU cores
+chunk_size = 1000  # Size of each chunk
+num_chunks = math.ceil(len(ml_training_df) / chunk_size)
+
+print(f"Total records: {len(ml_training_df)}")
+print(f"Number of CPU cores available: {num_cores}")
+print(f"Number of chunks: {num_chunks}")
+
+# Split data into chunks
+model_input_chunks = np.array_split(ml_training_df['MODEL_INPUT'], num_chunks)
+
+# Process chunks in parallel
 model_input_df = pd.DataFrame()
+processed_chunks = 0
 
-# Check if we have a saved intermediate result
-intermediate_file = save_dir / 'model_input_processed.pkl'
-if intermediate_file.exists():
-    print("Loading previously processed MODEL_INPUT data...")
-    with open(intermediate_file, 'rb') as f:
-        model_input_df = pickle.load(f)
-    print("Loaded saved progress.")
-else:
-    for chunk_start in tqdm.tqdm(range(0, total_rows, chunk_size)):
-        chunk_end = min(chunk_start + chunk_size, total_rows)
-        chunk_df = pd.DataFrame()
-        
-        for idx in range(chunk_start, chunk_end):
-            try:
-                row = ml_training_df['MODEL_INPUT'].iloc[idx]
-                data = json.loads(row) if isinstance(row, str) else row
-                row_df = pd.DataFrame([data])
-                chunk_df = pd.concat([chunk_df, row_df], ignore_index=True)
-            except Exception as e:
-                print(f"\nError processing row {idx}: {e}")
-                chunk_df = pd.concat([chunk_df, pd.DataFrame([{}])], ignore_index=True)
-        
-        model_input_df = pd.concat([model_input_df, chunk_df], ignore_index=True)
-        
-        # Save intermediate result every 5 chunks
-        if (chunk_start // chunk_size) % 5 == 0:
-            print(f"\nSaving intermediate result at row {chunk_end}...")
-            with open(intermediate_file, 'wb') as f:
-                pickle.dump(model_input_df, f)
+with ProcessPoolExecutor(max_workers=num_cores) as executor:
+    # Submit all chunks for processing
+    future_to_chunk = {executor.submit(process_chunk, chunk): i 
+                      for i, chunk in enumerate(model_input_chunks)}
+    
+    # Process completed chunks
+    for future in tqdm.tqdm(as_completed(future_to_chunk), total=len(model_input_chunks)):
+        chunk_idx = future_to_chunk[future]
+        try:
+            chunk_df = future.result()
+            model_input_df = pd.concat([model_input_df, chunk_df], ignore_index=True)
+            processed_chunks += 1
+            
+            # Save intermediate results every 10 chunks
+            if processed_chunks % 10 == 0:
+                print(f"\nSaving after {processed_chunks} chunks...")
+                with open(save_dir / f'model_input_processed_{processed_chunks}.pkl', 'wb') as f:
+                    pickle.dump(model_input_df, f)
+                
+        except Exception as e:
+            print(f'\nError processing chunk {chunk_idx}: {e}')
 
-    # Save final result
-    with open(intermediate_file, 'wb') as f:
-        pickle.dump(model_input_df, f)
-
-print("\nConverting MODEL_INPUT columns to numeric...")
-for col in tqdm.tqdm(model_input_df.columns):
-    try:
-        model_input_df[col] = pd.to_numeric(model_input_df[col], errors='raise')
-    except:
-        print(f"\nColumn {col} contains non-numeric values, creating dummies...")
-        dummies = pd.get_dummies(model_input_df[col], prefix=f'MODEL_INPUT_{col}')
-        model_input_df = pd.concat([model_input_df.drop(columns=[col]), dummies], axis=1)
-
-# Save processed MODEL_INPUT
-print("\nSaving processed MODEL_INPUT...")
+# Save final processed MODEL_INPUT
+print("\nSaving final processed MODEL_INPUT...")
 with open(save_dir / 'model_input_processed_final.pkl', 'wb') as f:
     pickle.dump(model_input_df, f)
 
-# Process history columns with progress tracking
-for prefix in ['PTNT_GCN_HIST', 'PTNT_HIC3_HIST', 'DRUG_GCN_HIST', 'DRUG_HIC3_HIST']:
-    print(f"\nProcessing {prefix}...")
-    history_file = save_dir / f'{prefix}_processed.pkl'
-    
-    if history_file.exists():
-        print(f"Loading previously processed {prefix} data...")
-        with open(history_file, 'rb') as f:
-            history_df = pickle.load(f)
-    else:
-        history_df = pd.DataFrame()
-        
-        for idx in tqdm.tqdm(range(total_rows)):
+print("MODEL_INPUT processing complete!")
+
+# ---------------
+
+# Cell 7: Convert MODEL_INPUT columns to numeric (using GPU if available)
+print("Converting MODEL_INPUT columns to numeric...")
+
+def convert_columns_to_numeric(df):
+    """Convert columns to numeric, handling categorical ones"""
+    result_df = df.copy()
+    for col in tqdm.tqdm(df.columns):
+        try:
+            # Try GPU acceleration if available
             try:
-                row = ml_training_df[prefix].iloc[idx]
-                data = json.loads(row) if isinstance(row, str) else row
-                processed_data = {k: float(v) if isinstance(v, (int, float)) else 1.0 
-                                for k, v in data.items()}
-                history_df = pd.concat([history_df, pd.DataFrame([processed_data])], 
-                                     ignore_index=True)
-                
-                # Save intermediate result every 10000 rows
-                if idx % 10000 == 0:
-                    with open(history_file, 'wb') as f:
-                        pickle.dump(history_df, f)
-                        
-            except Exception as e:
-                print(f"\nError processing row {idx} in {prefix}: {e}")
-                history_df = pd.concat([history_df, pd.DataFrame([{}])], 
-                                     ignore_index=True)
-        
-        # Save final result
-        with open(history_file, 'wb') as f:
-            pickle.dump(history_df, f)
+                # Move to GPU
+                col_gpu = cp.array(df[col].values)
+                # Convert to numeric
+                result_df[col] = cp.asnumeric(col_gpu).get()
+            except:
+                # Fallback to CPU
+                result_df[col] = pd.to_numeric(df[col], errors='raise')
+        except:
+            print(f"\nColumn {col} contains non-numeric values, creating dummies...")
+            dummies = pd.get_dummies(df[col], prefix=f'MODEL_INPUT_{col}')
+            result_df = pd.concat([result_df.drop(columns=[col]), dummies], axis=1)
     
-    # Add prefix to column names
-    history_df.columns = [f'{prefix}_{col}' for col in history_df.columns]
-    
-    # Convert all columns to numeric
-    print(f"Converting {prefix} columns to numeric...")
-    for col in tqdm.tqdm(history_df.columns):
-        history_df[col] = pd.to_numeric(history_df[col], errors='coerce').fillna(0)
-    
-    # Concatenate with main dataframe
-    ml_training_df = pd.concat([ml_training_df, history_df], axis=1)
-    print(f"Added {len(history_df.columns)} features from {prefix}")
+    return result_df
 
-print("\nCreating labels...")
-# Create labels
-nba_list = ['NBA3', 'NBA4', 'NBA5', 'NBA5_CD', 'NBA7', 'NBA8', 'NBA12']
-ml_training_df['label'] = ml_training_df.apply(
-    lambda row: ','.join(
-        [f"{nba}_ATTEMPTED" for nba in nba_list 
-         if row[f"{nba}_ATTEMPTED"] == 1]
-    ),
-    axis=1
-)
+# Load the processed MODEL_INPUT if not in memory
+if 'model_input_df' not in locals():
+    print("Loading processed MODEL_INPUT...")
+    with open(save_dir / 'model_input_processed_final.pkl', 'rb') as f:
+        model_input_df = pickle.load(f)
 
-# Drop original JSON columns
-columns_to_drop = [col for col in ml_training_df.columns 
-                  if col in ['MODEL_INPUT', 'PTNT_GCN_HIST', 'PTNT_HIC3_HIST', 
-                            'DRUG_GCN_HIST', 'DRUG_HIC3_HIST']]
-ml_training_df = ml_training_df.drop(columns=columns_to_drop)
+# Convert to numeric
+model_input_df = convert_columns_to_numeric(model_input_df)
 
-# Save final processed dataframe
-print("\nSaving final processed dataframe...")
-with open(save_dir / 'final_processed_df.pkl', 'wb') as f:
-    pickle.dump(ml_training_df, f)
+# Save numeric version
+print("\nSaving numeric MODEL_INPUT...")
+with open(save_dir / 'model_input_numeric_final.pkl', 'wb') as f:
+    pickle.dump(model_input_df, f)
 
-print("\nFeature processing complete.")
-print(f"Final dataframe shape: {ml_training_df.shape}")
-print("\nSample of columns and their types:")
-print(ml_training_df.dtypes.head())
+print("Numeric conversion complete!")
+print(f"Final shape: {model_input_df.shape}")
