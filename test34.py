@@ -1,54 +1,25 @@
-# Cell 6: Combine Features and Create Labels
-# Combine all features
-ml_training_df = pd.concat([ml_training_df, ptnt_hist_df, drug_hist_df], axis=1)
+# Cell 9: Train First Stage Model (Updated)
+# Get feature columns, excluding non-feature columns
+feature_cols = [col for col in ml_training_df.columns 
+               if col not in ['label', 'MESSAGE_ID', 'is_insurance'] 
+               and not col.endswith('_ATTEMPTED')]
 
-# Create multi-label representation with correct NBA numbers
-nba_list = ['NBA3', 'NBA4', 'NBA5', 'NBA5_CD', 'NBA7', 'NBA8', 'NBA12']
+# Convert all feature columns to float
+X_train = train_df[feature_cols].astype(float)
 
-# Create multi-label representation
-ml_training_df['label'] = ml_training_df.apply(
-    lambda row: ','.join(
-        [f"{nba}_ATTEMPTED" for nba in nba_list 
-         if row[f"{nba}_ATTEMPTED"] == 1]
-    ),
-    axis=1
+# Prepare insurance labels
+train_df['is_insurance'] = train_df['label'].apply(
+    lambda x: 1.0 if any(indicator in x 
+                        for indicator in ['NBA4_ATTEMPTED', 'NBA5_CD_ATTEMPTED']) 
+    else 0.0
 )
 
-# Print label distribution
-print("Label distribution:")
-print(ml_training_df['label'].value_counts().head(10))
-
-# Print multi-label statistics
-print("\nMulti-label statistics:")
-print("Total number of samples:", len(ml_training_df))
-print("Number of unique label combinations:", ml_training_df['label'].nunique())
-print("\nSample counts per NBA:")
-for nba in nba_list:
-    count = ml_training_df[ml_training_df['label'].str.contains(f"{nba}_ATTEMPTED")].shape[0]
-    print(f"{nba}_ATTEMPTED: {count}")
-
-#cell 9
-
-# Cell 9: Train First Stage Model
-# Function to identify insurance cases (NBA4 and NBA5_CD)
-def is_insurance_case(label):
-    insurance_indicators = ['NBA4_ATTEMPTED', 'NBA5_CD_ATTEMPTED']
-    return any(indicator in label for indicator in insurance_indicators)
-
-# Prepare stage 1 data
-train_df['is_insurance'] = train_df['label'].apply(is_insurance_case)
-
-# Print distribution of insurance vs non-insurance cases
-print("Distribution of cases:")
-print(train_df['is_insurance'].value_counts(normalize=True))
+print("Feature columns shape:", X_train.shape)
+print("Sample of feature values:")
+print(X_train.head())
 
 # Train stage 1 model
 stage1_model = xgb.XGBClassifier(**xgb_params)
-stage1_model.fit(train_df[feature_cols], train_df['is_insurance'])
+stage1_model.fit(X_train, train_df['is_insurance'])
 
 print("\nStage 1 model trained")
-
-# Quick validation on training data
-train_insurance_pred = stage1_model.predict(train_df[feature_cols])
-print("\nStage 1 Training Performance:")
-print(classification_report(train_df['is_insurance'], train_insurance_pred))
