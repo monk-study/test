@@ -151,3 +151,76 @@ with open(save_dir / 'model_input_numeric_final.pkl', 'wb') as f:
 
 print("Numeric conversion complete!")
 print(f"Final shape: {model_input_df.shape}")
+#--------
+
+# Cell: Process History Columns in Parallel
+import tqdm
+from concurrent.futures import ProcessPoolExecutor
+import multiprocessing as mp
+import json
+
+def process_history_row(row_data):
+    """Process a single history row"""
+    try:
+        data = json.loads(row_data) if isinstance(row_data, str) else row_data
+        # Convert all values to float where possible
+        return {k: float(v) if isinstance(v, (int, float)) else 1.0 
+                for k, v in data.items()}
+    except Exception as e:
+        print(f"Error processing history row: {str(e)}")
+        return {}
+
+def process_history_column_parallel(column_data, column_name):
+    """Process an entire history column in parallel"""
+    num_cores = mp.cpu_count()
+    print(f"\nProcessing {column_name} with {num_cores} cores...")
+    
+    with ProcessPoolExecutor(max_workers=num_cores) as executor:
+        results = list(tqdm.tqdm(
+            executor.map(process_history_row, column_data),
+            total=len(column_data),
+            desc=column_name
+        ))
+    
+    # Convert results to DataFrame
+    history_df = pd.DataFrame(results)
+    
+    # Add prefix to column names
+    history_df.columns = [f'{column_name}_{col}' for col in history_df.columns]
+    
+    # Convert all columns to numeric, replacing non-numeric with 0
+    for col in history_df.columns:
+        history_df[col] = pd.to_numeric(history_df[col], errors='coerce').fillna(0)
+    
+    return history_df
+
+# List of history columns to process
+history_columns = [
+    'PTNT_GCN_HIST',
+    'PTNT_HIC3_HIST',
+    'DRUG_GCN_HIST',
+    'DRUG_HIC3_HIST'
+]
+
+# Process each history column in sequence (but each column processes in parallel)
+processed_dfs = {}
+for column in history_columns:
+    processed_dfs[column] = process_history_column_parallel(
+        ml_training_df[column],
+        column
+    )
+    print(f"\n{column} processed:")
+    print(f"Shape: {processed_dfs[column].shape}")
+    print(f"Sample columns: {list(processed_dfs[column].columns)[:5]}")
+
+# Combine all processed history columns with main dataframe
+print("\nCombining all processed columns...")
+for column in history_columns:
+    ml_training_df = pd.concat([ml_training_df, processed_dfs[column]], axis=1)
+    print(f"Added {processed_dfs[column].shape[1]} columns from {column}")
+
+# Drop original history columns
+ml_training_df = ml_training_df.drop(columns=history_columns)
+
+print("\nAll history columns processed!")
+print(f"Final dataframe shape: {ml_training_df.shape}")
