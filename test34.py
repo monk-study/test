@@ -223,7 +223,7 @@ for column in history_columns:
 ml_training_df = ml_training_df.drop(columns=history_columns)
 #------------
 
-# Cell: Verify numeric columns
+# Cell: Verify numeric columns and handle JSON/complex columns
 import pickle
 from pathlib import Path
 
@@ -239,36 +239,64 @@ if pickle_path.exists():
 else:
     print("No saved dataframe found, using current ml_training_df")
 
-print("\nVerifying numeric columns...")
+print("\nVerifying and processing columns...")
 
 # Function to check if a column is numeric
 def is_numeric_dtype(col):
     return pd.api.types.is_numeric_dtype(col)
 
-# Check each column
+# Handle HIC3_CD (categorical column)
+if 'HIC3_CD' in ml_training_df.columns:
+    print("\nProcessing HIC3_CD...")
+    # Create dummy variables for HIC3_CD
+    hic3_dummies = pd.get_dummies(ml_training_df['HIC3_CD'], prefix='HIC3_CD')
+    ml_training_df = pd.concat([ml_training_df, hic3_dummies], axis=1)
+    ml_training_df = ml_training_df.drop('HIC3_CD', axis=1)
+
+# Handle TTLTIMESPAID
+if 'TTLTIMESPAID' in ml_training_df.columns:
+    print("\nProcessing TTLTIMESPAID...")
+    ml_training_df['TTLTIMESPAID'] = pd.to_numeric(ml_training_df['TTLTIMESPAID'], errors='coerce').fillna(0)
+
+# Handle JSON columns
+json_columns = [
+    'MODEL_INPUT_JSON',
+    'PTNT_GCN_HIST_JSON',
+    'PTNT_HIC3_HIST_JSON',
+    'DRUG_GCN_HIST_JSON',
+    'DRUG_HIC3_HIST_JSON'
+]
+
+for col in json_columns:
+    if col in ml_training_df.columns:
+        print(f"\nRemoving JSON column: {col}")
+        ml_training_df = ml_training_df.drop(col, axis=1)
+
+# Check remaining non-numeric columns
 non_numeric_cols = []
 for col in ml_training_df.columns:
     if col not in ['label', 'MESSAGE_ID']:
-        if not is_numeric_dtype(ml_training_df[col]):
-            non_numeric_cols.append(col)
-            print(f"\nNon-numeric column found: {col}")
-            print(f"Current dtype: {ml_training_df[col].dtype}")
-            print("Sample values:")
-            print(ml_training_df[col].head())
+        try:
+            if not is_numeric_dtype(ml_training_df[col]):
+                print(f"\nChecking column: {col}")
+                print(f"Current dtype: {ml_training_df[col].dtype}")
+                print("Sample values:")
+                print(ml_training_df[col].head())
+                non_numeric_cols.append(col)
+        except Exception as e:
+            print(f"Error checking column {col}: {str(e)}")
 
 if non_numeric_cols:
     print("\nFound non-numeric columns:", non_numeric_cols)
-    print("\nAttempting to convert non-numeric columns...")
+    print("Attempting to convert remaining non-numeric columns...")
     
     for col in non_numeric_cols:
         try:
-            ml_training_df[col] = pd.to_numeric(ml_training_df[col], errors='coerce').fillna(0)
-            print(f"Successfully converted {col} to numeric")
+            if col not in ['label', 'MESSAGE_ID'] + json_columns:
+                ml_training_df[col] = pd.to_numeric(ml_training_df[col], errors='coerce').fillna(0)
+                print(f"Successfully converted {col} to numeric")
         except Exception as e:
             print(f"Could not convert {col}: {str(e)}")
-
-else:
-    print("\nAll columns (except label and MESSAGE_ID) are numeric!")
 
 # Print summary of column types
 print("\nColumn types summary:")
@@ -279,8 +307,18 @@ print("\nSaving verified dataframe...")
 with open(save_dir / 'ml_training_df_verified.pkl', 'wb') as f:
     pickle.dump(ml_training_df, f)
 
+# Print final statistics
 print("\nVerification complete!")
 print(f"Final shape: {ml_training_df.shape}")
+print("\nSample of final columns:")
+print(list(ml_training_df.columns)[:5])
 
-print("\nAll history columns processed!")
-print(f"Final dataframe shape: {ml_training_df.shape}")
+# Print multi-label statistics
+print("\nMulti-label statistics:")
+print(f"Total number of samples:", len(ml_training_df))
+print(f"Number of unique label combinations:", ml_training_df['label'].nunique())
+print("\nSample counts per NBA:")
+nba_list = ['NBA3', 'NBA4', 'NBA5', 'NBA5_CD', 'NBA7', 'NBA8', 'NBA12']
+for nba in nba_list:
+    count = ml_training_df[ml_training_df['label'].str.contains(f"{nba}_ATTEMPTED")].shape[0]
+    print(f"{nba}_ATTEMPTED: {count}")
