@@ -4,12 +4,28 @@ import pickle
 from pathlib import Path
 import multiprocessing as mp
 from concurrent.futures import ProcessPoolExecutor, as_completed
-import cupy as cp  # For GPU support
 import math
 
-# Create directory for intermediate results if it doesn't exist
-save_dir = Path('intermediate_results')
-save_dir.mkdir(exist_ok=True)
+def flatten_value(v):
+    """Convert complex values (lists, dicts) to simple types"""
+    if isinstance(v, list):
+        # For lists, join elements with comma or take the first element
+        if len(v) == 0:
+            return 0
+        if all(isinstance(x, (int, float)) for x in v):
+            return sum(v) / len(v)  # average for numeric lists
+        return 1  # indicator that list exists
+    elif isinstance(v, dict):
+        # For dictionaries, indicate presence
+        return 1 if v else 0
+    elif isinstance(v, (int, float)):
+        return float(v)
+    elif isinstance(v, str):
+        try:
+            return float(v)
+        except ValueError:
+            return 1  # indicator that value exists
+    return 0
 
 def process_chunk(chunk_data):
     """Process a chunk of MODEL_INPUT data in parallel"""
@@ -17,9 +33,12 @@ def process_chunk(chunk_data):
     for row in chunk_data:
         try:
             data = json.loads(row) if isinstance(row, str) else row
-            row_df = pd.DataFrame([data])
+            # Flatten complex values
+            flattened_data = {k: flatten_value(v) for k, v in data.items()}
+            row_df = pd.DataFrame([flattened_data])
             chunk_df = pd.concat([chunk_df, row_df], ignore_index=True)
         except Exception as e:
+            print(f"Error in chunk processing: {e}")
             chunk_df = pd.concat([chunk_df, pd.DataFrame([{}])], ignore_index=True)
     return chunk_df
 
@@ -54,7 +73,8 @@ with ProcessPoolExecutor(max_workers=num_cores) as executor:
             
             # Save intermediate results every 10 chunks
             if processed_chunks % 10 == 0:
-                print(f"\nSaving after {processed_chunks} chunks...")
+                print(f"\nProcessed {processed_chunks}/{num_chunks} chunks")
+                print(f"Current shape: {model_input_df.shape}")
                 with open(save_dir / f'model_input_processed_{processed_chunks}.pkl', 'wb') as f:
                     pickle.dump(model_input_df, f)
                 
@@ -67,6 +87,46 @@ with open(save_dir / 'model_input_processed_final.pkl', 'wb') as f:
     pickle.dump(model_input_df, f)
 
 print("MODEL_INPUT processing complete!")
+
+#----------
+# Cell 7: Verify and clean numeric data
+print("Verifying numeric conversion...")
+
+def verify_numeric_column(series):
+    """Verify if a column can be converted to numeric and handle errors"""
+    try:
+        return pd.to_numeric(series, errors='raise')
+    except:
+        # If conversion fails, print sample of problematic values
+        problematic = series[~series.apply(lambda x: isinstance(x, (int, float)))]
+        if len(problematic) > 0:
+            print(f"\nColumn {series.name} has non-numeric values. Sample:")
+            print(problematic.head())
+        # Return original series for further inspection
+        return series
+
+# Load the processed MODEL_INPUT if not in memory
+if 'model_input_df' not in locals():
+    print("Loading processed MODEL_INPUT...")
+    with open(save_dir / 'model_input_processed_final.pkl', 'rb') as f:
+        model_input_df = pickle.load(f)
+
+# Verify each column
+print("\nChecking column types...")
+for col in model_input_df.columns:
+    model_input_df[col] = verify_numeric_column(model_input_df[col])
+
+# Print summary of column types
+print("\nColumn types summary:")
+print(model_input_df.dtypes.value_counts())
+
+# Save verified numeric version
+print("\nSaving verified MODEL_INPUT...")
+with open(save_dir / 'model_input_numeric_verified.pkl', 'wb') as f:
+    pickle.dump(model_input_df, f)
+
+print("Verification complete!")
+print(f"Final shape: {model_input_df.shape}")
 
 # ---------------
 
