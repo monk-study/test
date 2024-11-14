@@ -1,3 +1,52 @@
+# Cell: Final verification of numeric columns
+print("Final verification of columns...")
+
+# First check what those object columns are
+object_cols = ml_training_df.select_dtypes(include=['object']).columns
+print("\nColumns still in object format:")
+for col in object_cols:
+    print(f"\nColumn: {col}")
+    print("Sample values:")
+    print(ml_training_df[col].head())
+
+# Try to convert the remaining columns one by one with explicit error handling
+for col in ml_training_df.columns:
+    if col not in ['label', 'MESSAGE_ID']:  # Skip these columns
+        try:
+            # Try to convert to numeric directly
+            ml_training_df[col] = pd.to_numeric(ml_training_df[col], errors='coerce')
+            
+            # Fill NaN values with 0
+            if ml_training_df[col].isna().any():
+                print(f"\nFound NaN values in {col}, filling with 0")
+                ml_training_df[col] = ml_training_df[col].fillna(0)
+                
+        except Exception as e:
+            print(f"\nCouldn't convert {col}: {str(e)}")
+            print("Sample values causing issues:")
+            print(ml_training_df[col].head())
+
+# Check final dtypes
+print("\nFinal column types summary:")
+dtype_counts = ml_training_df.dtypes.value_counts()
+print(dtype_counts)
+
+# Verify if any object columns remain
+remaining_objects = ml_training_df.select_dtypes(include=['object']).columns
+if len(remaining_objects) > 0:
+    print("\nWarning: These columns are still in object format:")
+    for col in remaining_objects:
+        if col not in ['label', 'MESSAGE_ID']:
+            print(f"\n{col}:")
+            print(ml_training_df[col].value_counts().head())
+else:
+    print("\nAll columns (except label and MESSAGE_ID) are now numeric!")
+
+# Save the final verified version
+print("\nSaving final verified version...")
+with open(save_dir / 'ml_training_df_final_verified.pkl', 'wb') as f:
+    pickle.dump(ml_training_df, f)
+# ---------
 # Cell: Verify numeric columns and handle JSON/complex columns
 import pickle
 from pathlib import Path
