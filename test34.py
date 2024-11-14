@@ -221,6 +221,66 @@ for column in history_columns:
 
 # Drop original history columns
 ml_training_df = ml_training_df.drop(columns=history_columns)
+#------------
+
+# Cell: Verify numeric columns
+import pickle
+from pathlib import Path
+
+# Load the processed dataframe from pickle
+save_dir = Path('intermediate_results')
+pickle_path = save_dir / 'final_processed_df.pkl'
+
+print("Loading processed dataframe...")
+if pickle_path.exists():
+    with open(pickle_path, 'rb') as f:
+        ml_training_df = pickle.load(f)
+    print("Loaded successfully!")
+else:
+    print("No saved dataframe found, using current ml_training_df")
+
+print("\nVerifying numeric columns...")
+
+# Function to check if a column is numeric
+def is_numeric_dtype(col):
+    return pd.api.types.is_numeric_dtype(col)
+
+# Check each column
+non_numeric_cols = []
+for col in ml_training_df.columns:
+    if col not in ['label', 'MESSAGE_ID']:
+        if not is_numeric_dtype(ml_training_df[col]):
+            non_numeric_cols.append(col)
+            print(f"\nNon-numeric column found: {col}")
+            print(f"Current dtype: {ml_training_df[col].dtype}")
+            print("Sample values:")
+            print(ml_training_df[col].head())
+
+if non_numeric_cols:
+    print("\nFound non-numeric columns:", non_numeric_cols)
+    print("\nAttempting to convert non-numeric columns...")
+    
+    for col in non_numeric_cols:
+        try:
+            ml_training_df[col] = pd.to_numeric(ml_training_df[col], errors='coerce').fillna(0)
+            print(f"Successfully converted {col} to numeric")
+        except Exception as e:
+            print(f"Could not convert {col}: {str(e)}")
+
+else:
+    print("\nAll columns (except label and MESSAGE_ID) are numeric!")
+
+# Print summary of column types
+print("\nColumn types summary:")
+print(ml_training_df.dtypes.value_counts())
+
+# Save verified dataframe
+print("\nSaving verified dataframe...")
+with open(save_dir / 'ml_training_df_verified.pkl', 'wb') as f:
+    pickle.dump(ml_training_df, f)
+
+print("\nVerification complete!")
+print(f"Final shape: {ml_training_df.shape}")
 
 print("\nAll history columns processed!")
 print(f"Final dataframe shape: {ml_training_df.shape}")
