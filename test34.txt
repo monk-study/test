@@ -1,73 +1,128 @@
-Given that multiple NBAs occur infrequently in the data, the OneVsRest with XGBoost might actually be a reasonable baseline approach. Let's analyze:
+Let's analyze the insurance-related NBA dependencies, looking at NBA4 (Update Condor) and NBA5_CD (Prior Authorization) which are insurance-related:
 
-Pros of Current OneVsRest Approach:
-1. Good performance on single labels
-   - NBA5: F1 = 0.73
-   - NBA12: F1 = 0.71
-   - NBA3: F1 = 0.72
-   These are decent scores for a baseline model
-
-2. Data Distribution Reality
-   - Most cases (>80%) are single NBA attempts
-   - Few multi-label cases might not justify complexity of multi-label specific models
-
-3. Business Context
-   - If most real-world cases are single NBAs, optimizing for these cases makes sense
-
-Areas for Improvement with Current Approach:
-1. NBA4 Performance (F1 = 0.09)
 ```python
-# Add class weights specifically for NBA4
-xgb_params.update({
-    'scale_pos_weight': len(y[y != 'NBA4_ATTEMPTED']) / len(y[y == 'NBA4_ATTEMPTED'])
-})
+# Analysis of Insurance-related NBA Dependencies
+def analyze_insurance_dependencies(df):
+    # Get counts of single vs combined occurrences
+    nba4_only = df['label'] == 'NBA4_ATTEMPTED'
+    nba5cd_only = df['label'] == 'NBA5_CD_ATTEMPTED'
+    
+    # Combined occurrences
+    nba4_and_others = df['label'].str.contains('NBA4_ATTEMPTED') & df['label'].str.contains(',')
+    nba5cd_and_others = df['label'].str.contains('NBA5_CD_ATTEMPTED') & df['label'].str.contains(',')
+    
+    dependencies = {
+        'NBA4': {
+            'single_occurrence': nba4_only.sum(),
+            'with_others': nba4_and_others.sum(),
+            'f1_score': 0.09,  # From results
+            'common_combinations': df[nba4_and_others]['label'].value_counts()
+        },
+        'NBA5_CD': {
+            'single_occurrence': nba5cd_only.sum(),
+            'with_others': nba5cd_and_others.sum(),
+            'f1_score': 0.56,  # From results
+            'common_combinations': df[nba5cd_and_others]['label'].value_counts()
+        }
+    }
+    return dependencies
 ```
 
-2. Better Feature Engineering
+Key Findings from Results:
+1. NBA4 (Update Condor) Performance:
+   - Very low F1 score (0.09)
+   - Low recall (0.054) suggests model misses most NBA4 cases
+   - Often occurs with:
+     - NBA5_ATTEMPTED (F1 = 0.031)
+     - NBA3_ATTEMPTED (F1 = 0.016)
+
+2. NBA5_CD (Prior Authorization) Performance:
+   - Moderate F1 score (0.56)
+   - Better recall (0.689)
+   - Less affected by combinations
+
+Common Patterns:
 ```python
-# Add interaction features
-def add_interaction_features(df):
-    # Example interactions that might be relevant for NBA4
-    df['times_paid_ratio'] = df['ttl_times_paid_ptnt_gcn_missing'] / (df['ttl_times_paid_cash_ptnt_gcn_missing'] + 1)
+# Example insurance pattern analysis
+def analyze_insurance_patterns(df):
+    # Look at feature patterns when insurance NBAs co-occur
+    insurance_combo_mask = (
+        df['label'].str.contains('NBA4_ATTEMPTED') | 
+        df['label'].str.contains('NBA5_CD_ATTEMPTED')
+    )
+    
+    # Analyze key features in these cases
+    key_features = [
+        'condr_plan_f_encoded',
+        'prod_svc_id_f_encoded',
+        'claim_submit_nbr'
+        # Add other relevant features
+    ]
+    
+    pattern_analysis = df[insurance_combo_mask][key_features].describe()
+    return pattern_analysis
+```
+
+Why Accuracy is Lower:
+1. Business Logic Dependencies:
+   - Insurance changes (NBA4) often trigger need for prior authorization (NBA5_CD)
+   - Model treating them independently misses these relationships
+
+2. Feature Interaction Issues:
+   - Insurance-related features might not be sufficient to distinguish between NBA4 and NBA5_CD
+   - Complex business rules not captured in features
+
+Recommendations:
+1. Feature Engineering for Insurance Cases:
+```python
+def add_insurance_features(df):
+    # Add interaction features
+    df['insurance_change_indicator'] = (
+        df['condr_plan_f_encoded'] * 
+        df['prod_svc_id_f_encoded']
+    )
+    
+    # Add temporal features
+    df['recent_insurance_changes'] = df[[col for col in df.columns 
+        if 'insurance' in col.lower()]].sum(axis=1)
+        
     return df
 ```
 
-3. Separate Model for Complex Cases
+2. Specialized Insurance Model:
 ```python
-# Keep OneVsRest for single labels but add detector for complex cases
-def is_complex_case(features):
-    # Logic to detect if a case might need multiple NBAs
-    return probability_of_complex_case
+def build_insurance_classifier():
+    # First determine if insurance-related
+    insurance_detector = xgb.XGBClassifier(
+        max_depth=4,
+        learning_rate=0.1
+    )
+    
+    # Then classify specific insurance NBA
+    insurance_classifier = xgb.XGBClassifier(
+        max_depth=6,
+        learning_rate=0.1,
+        scale_pos_weight=5  # Handle imbalance
+    )
+    
+    return insurance_detector, insurance_classifier
 ```
 
-Recommendation:
-1. Stick with OneVsRest + XGBoost for now but:
-   - Focus on improving NBA4 performance
-   - Add feature engineering
-   - Do error analysis on misclassifications
-
-2. Track these metrics:
+3. Business Rule Integration:
 ```python
-def detailed_metrics():
-    # Single label accuracy
-    single_label_accuracy = ...
-    
-    # Complex case detection
-    complex_case_accuracy = ...
-    
-    # NBA4 specific metrics
-    nba4_confusion = ...
-    
-    return {
-        'single_label_acc': single_label_accuracy,
-        'complex_case_acc': complex_case_accuracy,
-        'nba4_metrics': nba4_confusion
-    }
+def apply_business_rules(predictions, features):
+    # If insurance change detected, check for authorization need
+    if predictions['NBA4_ATTEMPTED'] == 1:
+        # Check authorization rules
+        needs_auth = check_authorization_rules(features)
+        if needs_auth:
+            predictions['NBA5_CD_ATTEMPTED'] = 1
+    return predictions
 ```
 
 Would you like me to:
-1. Focus on NBA4 improvement while keeping current approach?
-2. Add more detailed error analysis?
-3. Implement feature engineering for specific NBAs?
+1. Implement detailed analysis of these dependencies?
+2. Create specialized insurance-focused features?
+3. Build a separate insurance-specific model?
 
-The current approach might be "good enough" for now, especially if the business can tolerate lower accuracy on multi-label cases given their rarity. We can iterate on this baseline rather than switching to a more complex approach prematurely.
+The low accuracy seems largely due to treating these insurance-related NBAs independently when they're actually linked through business rules and processes.
