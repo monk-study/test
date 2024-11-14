@@ -1,4 +1,5 @@
 # Cell 6: Process MODEL_INPUT with parallel processing
+# Cell 6: Process MODEL_INPUT with parallel processing
 import tqdm
 import pickle
 from pathlib import Path
@@ -27,18 +28,41 @@ def flatten_value(v):
             return 1  # indicator that value exists
     return 0
 
+def process_json_data(data):
+    """Process JSON data handling both dict and list formats"""
+    if isinstance(data, list):
+        # If data is a list, create features from list properties
+        return {
+            'list_length': len(data),
+            'has_content': 1 if len(data) > 0 else 0
+        }
+    elif isinstance(data, dict):
+        # If data is a dict, process each value
+        return {k: flatten_value(v) for k, v in data.items()}
+    else:
+        # For other cases, return empty dict
+        return {}
+
 def process_chunk(chunk_data):
     """Process a chunk of MODEL_INPUT data in parallel"""
     chunk_df = pd.DataFrame()
     for row in chunk_data:
         try:
-            data = json.loads(row) if isinstance(row, str) else row
-            # Flatten complex values
-            flattened_data = {k: flatten_value(v) for k, v in data.items()}
-            row_df = pd.DataFrame([flattened_data])
+            # Parse JSON if string
+            if isinstance(row, str):
+                data = json.loads(row)
+            else:
+                data = row
+                
+            # Process the data
+            processed_data = process_json_data(data)
+            
+            # Convert to DataFrame row
+            row_df = pd.DataFrame([processed_data])
             chunk_df = pd.concat([chunk_df, row_df], ignore_index=True)
+            
         except Exception as e:
-            print(f"Error in chunk processing: {e}")
+            print(f"Error in chunk processing: {str(e)}")
             chunk_df = pd.concat([chunk_df, pd.DataFrame([{}])], ignore_index=True)
     return chunk_df
 
@@ -50,6 +74,16 @@ num_chunks = math.ceil(len(ml_training_df) / chunk_size)
 print(f"Total records: {len(ml_training_df)}")
 print(f"Number of CPU cores available: {num_cores}")
 print(f"Number of chunks: {num_chunks}")
+
+# Let's examine a few rows first to understand the structure
+print("\nExamining first few MODEL_INPUT entries:")
+for i in range(3):
+    try:
+        data = json.loads(ml_training_df['MODEL_INPUT'].iloc[i])
+        print(f"\nRow {i} type: {type(data)}")
+        print(f"Sample content: {str(data)[:200]}...")
+    except Exception as e:
+        print(f"Error parsing row {i}: {str(e)}")
 
 # Split data into chunks
 model_input_chunks = np.array_split(ml_training_df['MODEL_INPUT'], num_chunks)
@@ -79,12 +113,18 @@ with ProcessPoolExecutor(max_workers=num_cores) as executor:
                     pickle.dump(model_input_df, f)
                 
         except Exception as e:
-            print(f'\nError processing chunk {chunk_idx}: {e}')
+            print(f'\nError processing chunk {chunk_idx}: {str(e)}')
 
 # Save final processed MODEL_INPUT
 print("\nSaving final processed MODEL_INPUT...")
 with open(save_dir / 'model_input_processed_final.pkl', 'wb') as f:
     pickle.dump(model_input_df, f)
+
+# Print sample of processed data
+print("\nSample of processed data:")
+print(model_input_df.head())
+print("\nColumn names:")
+print(model_input_df.columns.tolist())
 
 print("MODEL_INPUT processing complete!")
 
