@@ -1,0 +1,164 @@
+I'll go through the code in the `train_model` function (cell 16) based on the visible lines and explain each part in detail.
+
+---
+
+### Explanation of `train_model` Function (Cell 16)
+
+1. **Function Definition and Parameters**:
+   ```python
+   def train_model(model, train_loader, val_loader, device, num_epochs=50):
+   ```
+   - Defines a function `train_model` which takes a PyTorch model, training data loader (`train_loader`), validation data loader (`val_loader`), the `device` (CPU or GPU), and the number of epochs (`num_epochs`), with a default of 50 epochs.
+
+2. **Extract Positive Weights**:
+   ```python
+   pos_weights = next(iter(train_loader))[1].pos_weights.to(device)
+   ```
+   - Retrieves positive weights from the first batch in `train_loader` (assuming the labels contain `pos_weights` as an attribute) and moves them to the specified device. This is often used for weighted loss functions to handle class imbalance.
+
+3. **Initialize Loss and Optimizer**:
+   ```python
+   criterion = WeightedBCELoss(pos_weights)
+   optimizer = optim.AdamW(model.parameters(), lr=1e-3, weight_decay=0.01)
+   scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=3)
+   ```
+   - `criterion`: Initializes a weighted binary cross-entropy loss using the `pos_weights` to handle class imbalance.
+   - `optimizer`: Initializes the AdamW optimizer with a learning rate of `1e-3` and weight decay of `0.01`.
+   - `scheduler`: Sets a learning rate scheduler that reduces the learning rate when the validation loss plateaus, with a patience of 3 epochs.
+
+4. **Training History Dictionary**:
+   ```python
+   history = {
+       'train_loss': [],
+       'val_loss': [],
+       'insurance_f1': [],
+       'non_insurance_f1': []
+   }
+   ```
+   - Initializes a dictionary `history` to keep track of training and validation losses, as well as F1 scores for insurance and non-insurance classes.
+
+5. **Set Initial Best Validation Loss**:
+   ```python
+   best_val_loss = float('inf')
+   ```
+   - Sets `best_val_loss` to infinity initially. This will be used to track the lowest validation loss during training for model saving.
+
+6. **Training Loop**:
+   ```python
+   for epoch in range(num_epochs):
+   ```
+   - Starts a loop that iterates over the number of epochs.
+
+7. **Training Phase Setup**:
+   ```python
+   model.train()
+   train_loss = 0
+   ```
+   - Sets the model to training mode with `model.train()`.
+   - Initializes `train_loss` to zero to accumulate loss over the training batches.
+
+8. **Training Loop Over Batches**:
+   ```python
+   for features, labels in tqdm(train_loader):
+       features, labels = features.to(device), labels.to(device)
+       optimizer.zero_grad()
+       main_preds, insurance_preds = model(features)
+   ```
+   - Loops over each batch in `train_loader`, moving `features` and `labels` to the specified device.
+   - Clears the gradients with `optimizer.zero_grad()`.
+   - Passes the features through the model to get `main_preds` and `insurance_preds`.
+
+9. **Calculate Losses**:
+   ```python
+   main_loss = criterion(main_preds, labels[:, :5])
+   insurance_loss = criterion(insurance_preds, labels[:, 5:])
+   total_loss = main_loss + 2 * insurance_loss
+   ```
+   - `main_loss`: Calculates the main loss between `main_preds` and the first 5 columns of `labels`.
+   - `insurance_loss`: Calculates the loss between `insurance_preds` and the remaining columns in `labels`.
+   - `total_loss`: Combines the main loss and insurance loss with a weight of 2 for the insurance loss.
+
+10. **Backpropagation and Optimization**:
+    ```python
+    total_loss.backward()
+    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+    optimizer.step()
+    ```
+    - `total_loss.backward()`: Computes gradients via backpropagation.
+    - `clip_grad_norm_`: Clips gradients to prevent exploding gradients.
+    - `optimizer.step()`: Updates model parameters using computed gradients.
+
+11. **Accumulate Training Loss**:
+    ```python
+    train_loss += total_loss.item()
+    ```
+    - Adds the `total_loss` for the current batch to `train_loss`.
+
+12. **Validation Phase**:
+    ```python
+    model.eval()
+    val_loss = 0
+    val_preds = []
+    val_labels = []
+    ```
+    - Switches the model to evaluation mode with `model.eval()`.
+    - Initializes `val_loss` to zero, and empty lists for `val_preds` and `val_labels` to store predictions and labels for validation metrics.
+
+13. **Validation Loop (Without Gradients)**:
+    ```python
+    with torch.no_grad():
+        for features, labels in val_loader:
+            features, labels = features.to(device), labels.to(device)
+            main_preds, insurance_preds = model(features)
+            main_loss = criterion(main_preds, labels[:, :5])
+            insurance_loss = criterion(insurance_preds, labels[:, 5:])
+            total_loss = main_loss + 2 * insurance_loss
+            val_loss += total_loss.item()
+            val_preds.append(torch.cat([main_preds, insurance_preds], dim=1).cpu())
+            val_labels.append(labels.cpu())
+    ```
+    - Uses `torch.no_grad()` to avoid gradient computation in the validation loop.
+    - Iterates over `val_loader`, computes predictions and losses, and accumulates `val_loss`.
+    - Appends predictions (`val_preds`) and true labels (`val_labels`) to lists for metric calculation.
+
+14. **Concatenate Validation Predictions and Labels**:
+    ```python
+    val_preds = torch.cat(val_preds)
+    val_labels = torch.cat(val_labels)
+    ```
+    - Concatenates all validation predictions and labels across batches into single tensors.
+
+15. **Learning Rate Scheduler Update**:
+    ```python
+    scheduler.step(val_loss)
+    ```
+    - Updates the learning rate based on `val_loss` using the ReduceLROnPlateau scheduler.
+
+16. **Save Best Model**:
+    ```python
+    if val_loss < best_val_loss:
+        best_val_loss = val_loss
+        torch.save(model.state_dict(), 'best_nba_model.pt')
+    ```
+    - If the current `val_loss` is lower than the `best_val_loss`, updates `best_val_loss` and saves the model's state.
+
+17. **Update History and Print Progress**:
+    ```python
+    history['train_loss'].append(train_loss / len(train_loader))
+    history['val_loss'].append(val_loss / len(val_loader))
+    print(f'Epoch {epoch+1}/{num_epochs}')
+    print(f'Training Loss: {train_loss/len(train_loader):.4f}')
+    print(f'Validation Loss: {val_loss/len(val_loader):.4f}')
+    ```
+    - Records the average training and validation losses for the current epoch in `history`.
+    - Prints the epoch number, training loss, and validation loss.
+
+18. **Return Training History**:
+    ```python
+    return history
+    ```
+    - Returns the `history` dictionary containing training and validation losses and F1 scores.
+
+---
+
+Let me know if you need further clarification on any part!
